@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Suite booking server: SQLite storage, token auth, JSON API, live sync via long-polling.
+"""Akari Suite Booking System server: token auth, JSON API, live sync via long-polling.
 
-Standard library only. Run: python3 server.py  (env: PORT, DB_PATH)
+Storage: SQLite by default (standard library only), or PostgreSQL when DATABASE_URL is set (needs psycopg).
+Run: python3 server.py  (env: PORT, DB_PATH, DATABASE_URL)
 """
 import hashlib
 import hmac
@@ -19,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 PORT = int(os.environ.get("PORT", "8000"))
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "suite.db"))
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 SESSION_DAYS = 60
 
@@ -53,6 +55,9 @@ CREATE TABLE IF NOT EXISTS activity (
   detail TEXT DEFAULT '');
 """
 
+PG_SCHEMA = re.sub(r"\bINTEGER PRIMARY KEY\b", "SERIAL PRIMARY KEY",
+                   SCHEMA.replace(" COLLATE NOCASE", "").replace("REAL", "DOUBLE PRECISION"))
+
 DEFAULT_SETTINGS = {"business_name": "Akari Suites", "currency": "₱", "check_in_time": "14:00", "check_out_time": "12:00"}
 
 
@@ -69,15 +74,52 @@ change_cond = threading.Condition()
 _conn = None
 
 
+class PgDB:
+    """Minimal sqlite3-like wrapper over one autocommit psycopg connection; reconnects if it drops."""
+
+    def __init__(self, url):
+        import psycopg
+        from psycopg.rows import dict_row
+        self._psycopg, self._dict_row, self._url = psycopg, dict_row, url
+        self._lock = threading.Lock()
+        self._conn = None
+        self._connect()
+        self._conn.execute(PG_SCHEMA)
+
+    def _connect(self):
+        self._conn = self._psycopg.connect(self._url, autocommit=True, row_factory=self._dict_row)
+
+    def execute(self, sql, args=()):
+        sql = sql.replace("?", "%s")
+        for attempt in (0, 1):
+            try:
+                with self._lock:
+                    cur = self._conn.cursor()
+                    cur.execute(sql, args)
+                    return cur
+            except self._psycopg.OperationalError:
+                if attempt:
+                    raise
+                with self._lock:
+                    try:
+                        self._conn.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._connect()
+
+
 def db():
     global _conn
     if _conn is None:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        _conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
-        _conn.row_factory = sqlite3.Row
-        _conn.execute("PRAGMA foreign_keys=ON")
-        _conn.execute("PRAGMA journal_mode=WAL")
-        _conn.executescript(SCHEMA)
+        if DATABASE_URL:
+            _conn = PgDB(DATABASE_URL)
+        else:
+            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+            _conn = sqlite3.connect(DB_PATH, check_same_thread=False, isolation_level=None)
+            _conn.row_factory = sqlite3.Row
+            _conn.execute("PRAGMA foreign_keys=ON")
+            _conn.execute("PRAGMA journal_mode=WAL")
+            _conn.executescript(SCHEMA)
     return _conn
 
 
@@ -85,14 +127,28 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+_version = None
+
+
 def get_version():
-    row = db().execute("SELECT value FROM meta WHERE key='version'").fetchone()
-    return int(row["value"]) if row else 0
+    global _version
+    if _version is None:
+        row = db().execute("SELECT value FROM meta WHERE key='version'").fetchone()
+        _version = int(row["value"]) if row else 0
+    return _version
+
+
+def set_meta(key, value):
+    db().execute("INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (key, value))
 
 
 def bump_version():
-    v = get_version() + 1
-    db().execute("INSERT OR REPLACE INTO meta(key, value) VALUES('version', ?)", (str(v),))
+    global _version
+    with db_lock:
+        v = get_version() + 1
+        set_meta("version", str(v))
+        _version = v
     with change_cond:
         change_cond.notify_all()
     return v
@@ -228,27 +284,28 @@ def api_setup(user, body, q):
         password = req_str(body, "password", "Password")
         if len(password) < 6:
             raise ApiError(400, "Password must be at least 6 characters")
-        cur = db().execute("INSERT INTO users(username, name, role, pw_hash, created_at) VALUES(?,?,?,?,?)",
+        cur = db().execute("INSERT INTO users(username, name, role, pw_hash, created_at) VALUES(?,?,?,?,?) RETURNING id",
                            (username, opt_str(body, "name", 100) or username, "admin", hash_pw(password), now_iso()))
+        uid = cur.fetchone()["id"]
         settings = get_settings()
         if body.get("business_name"):
             settings["business_name"] = opt_str(body, "business_name", 100)
         if body.get("currency"):
             settings["currency"] = opt_str(body, "currency", 5)
-        db().execute("INSERT OR REPLACE INTO meta(key, value) VALUES('settings', ?)", (json.dumps(settings),))
+        set_meta("settings", json.dumps(settings))
         rooms_n = int(num(body, "rooms", 0))
         for i in range(min(rooms_n, 100)):
             db().execute("INSERT INTO rooms(name, sort, color) VALUES(?,?,?)",
                          (f"Suite {i + 1}", i, PALETTE[i % len(PALETTE)]))
         bump_version()
-        return {"token": create_session(cur.lastrowid)}
+        return {"token": create_session(uid)}
 
 
 PALETTE = ["#4f46e5", "#0891b2", "#059669", "#d97706", "#db2777", "#7c3aed", "#dc2626", "#2563eb", "#65a30d", "#0d9488"]
 
 
 def api_login(user, body, q):
-    u = db().execute("SELECT * FROM users WHERE username=?", (opt_str(body, "username", 50),)).fetchone()
+    u = db().execute("SELECT * FROM users WHERE lower(username)=lower(?)", (opt_str(body, "username", 50),)).fetchone()
     if not u or not u["active"] or not check_pw(str(body.get("password") or ""), u["pw_hash"]):
         time.sleep(0.5)
         raise ApiError(401, "Wrong username or password")
@@ -303,10 +360,10 @@ def api_create_booking(user, body, q):
         ts = now_iso()
         cur = db().execute(
             "INSERT INTO bookings(ref, room_id, guest_name, phone, email, guests, check_in, check_out, total, "
-            "status, source, notes, created_by, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "status, source, notes, created_by, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
             (new_ref(), f["room_id"], f["guest_name"], f["phone"], f["email"], f["guests"], f["check_in"],
              f["check_out"], f["total"], f["status"], f["source"], f["notes"], user["id"], ts, ts))
-        bid = cur.lastrowid
+        bid = cur.fetchone()["id"]
         deposit = num(body, "deposit", 0)
         if deposit > 0:
             db().execute("INSERT INTO payments(booking_id, amount, method, paid_on, note, created_by, created_at) "
@@ -412,7 +469,7 @@ def api_create_user(user, body, q):
         password = req_str(body, "password", "Password")
         if len(password) < 6:
             raise ApiError(400, "Password must be at least 6 characters")
-        if db().execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
+        if db().execute("SELECT 1 FROM users WHERE lower(username)=lower(?)", (username,)).fetchone():
             raise ApiError(400, "Username already taken")
         role = "admin" if body.get("role") == "admin" else "staff"
         db().execute("INSERT INTO users(username, name, role, pw_hash, created_at) VALUES(?,?,?,?,?)",
@@ -463,7 +520,7 @@ def api_settings(user, body, q):
         for k in DEFAULT_SETTINGS:
             if k in body:
                 s[k] = opt_str(body, k, 100)
-        db().execute("INSERT OR REPLACE INTO meta(key, value) VALUES('settings', ?)", (json.dumps(s),))
+        set_meta("settings", json.dumps(s))
         log(user, "updated settings")
         bump_version()
         return s
@@ -593,7 +650,7 @@ def main():
     db().execute("DELETE FROM sessions WHERE expires_at < ?", (time.time(),))
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     server.daemon_threads = True
-    print(f"Suite booking running on http://0.0.0.0:{PORT}  (db: {DB_PATH})", flush=True)
+    print(f"Akari Suite Booking System on http://0.0.0.0:{PORT}  (db: {'PostgreSQL' if DATABASE_URL else DB_PATH})", flush=True)
     server.serve_forever()
 
 

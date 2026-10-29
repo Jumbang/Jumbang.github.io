@@ -34,3 +34,9 @@ Back up the database by copying the `DB_PATH` file.
 
 ## Install on a phone
 Open the site → iPhone: Share → *Add to Home Screen*; Android: ⋮ → *Install app*.
+
+## Hosting on Render (free) with a Neon database
+
+The server uses SQLite by default. Set `DATABASE_URL` to a PostgreSQL connection string (e.g. from Neon) to store data there instead; this needs `pip install -r requirements.txt`.
+
+`render.yaml` defines a free Render web service (`python3 server.py`). Set `DATABASE_URL` in the Render dashboard, then add the custom domain (e.g. `akarisuites.com`) under the service's Settings → Custom Domains.
