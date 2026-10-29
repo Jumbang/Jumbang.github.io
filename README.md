@@ -40,3 +40,19 @@ Open the site → iPhone: Share → *Add to Home Screen*; Android: ⋮ → *Inst
 The server uses SQLite by default. Set `DATABASE_URL` to a PostgreSQL connection string (e.g. from Neon) to store data there instead; this needs `pip install -r requirements.txt`.
 
 `render.yaml` defines a free Render web service (`python3 server.py`). Set `DATABASE_URL` in the Render dashboard, then add the custom domain (e.g. `akarisuites.com`) under the service's Settings → Custom Domains.
+
+## Hosting on GitHub Pages + Supabase (free, always on)
+
+This is the recommended setup. The website is plain files served by GitHub Pages; all data, logins and live sync
+live in a free Supabase project.
+
+1. Create a Supabase project (region: Singapore). In **SQL Editor**, run `supabase/schema.sql`.
+   It creates the tables in a private `akari` schema and a single function `public.api(...)` that the app calls.
+2. In `static/config.js`, set `supabaseUrl` (Project URL) and `anonKey` (the public anon / publishable key).
+   Both are safe to publish; the data tables are not reachable with them, only through `public.api`.
+3. Push to the `main` branch of a public GitHub repo. `.github/workflows/pages.yml` publishes the `static/` folder.
+   In the repo's **Settings → Pages**, choose **GitHub Actions** as the source and set the custom domain.
+4. Open the site and create the owner account on the first screen.
+
+Live sync uses Supabase Realtime on the `public.sync_version` table, with a slow poll as a fallback.
+If `config.js` is left empty, the app talks to `server.py` instead (handy for local development).

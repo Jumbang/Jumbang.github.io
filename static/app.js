@@ -57,10 +57,26 @@ function findConflicts(roomId, ci, co, excludeId) {
 }
 
 /* ---------- API & sync ---------- */
+const CFG = window.AKARI_CONFIG || {};
+const SUPA = !!(CFG.supabaseUrl && CFG.anonKey);
+const REST = CFG.restUrl || (CFG.supabaseUrl || "").replace(/\/$/, "") + "/rest/v1";
+
+// Hosted mode: every API call goes to the Supabase function public.api(), which answers {status, body}.
+async function supaFetch(method, path, body) {
+  const r = await fetch(REST + "/rpc/api", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", apikey: CFG.anonKey },
+    body: JSON.stringify({ p_method: method, p_path: path, p_body: body || {}, p_token: S.token || null }),
+  });
+  const out = await r.json().catch(() => null);
+  if (!r.ok || !out) return { ok: false, status: r.status || 500, json: async () => ({ error: "Server error, please try again" }) };
+  return { ok: out.status < 400, status: out.status, json: async () => out.body };
+}
+
 async function api(method, path, body) {
   let res;
   try {
-    res = await fetch(path, {
+    res = SUPA ? await supaFetch(method, path, body) : await fetch(path, {
       method,
       headers: { "Content-Type": "application/json", ...(S.token ? { Authorization: "Bearer " + S.token } : {}) },
       body: body ? JSON.stringify(body) : undefined,
@@ -86,6 +102,7 @@ async function loadState() {
 
 let syncing = false;
 async function syncLoop() {
+  if (SUPA) return supaSyncLoop();
   if (syncing) return;
   syncing = true;
   while (S.token) {
@@ -101,6 +118,54 @@ async function syncLoop() {
   syncing = false;
 }
 
+// Hosted mode: Supabase Realtime pushes a message whenever public.sync_version changes; a slow poll is the safety net.
+let rtSocket = null, rtLive = false;
+function realtimeConnect() {
+  if (!S.token || rtSocket) return;
+  let ref = 0, hb;
+  const ws = new WebSocket(CFG.supabaseUrl.replace(/^http/, "ws").replace(/\/$/, "") +
+    "/realtime/v1/websocket?apikey=" + encodeURIComponent(CFG.anonKey) + "&vsn=1.0.0");
+  const send = (topic, event, payload) => ws.readyState === 1 && ws.send(JSON.stringify({ topic, event, payload, ref: String(++ref) }));
+  ws.onopen = () => {
+    send("realtime:akari-sync", "phx_join", {
+      config: { broadcast: { self: false }, presence: { key: "" }, postgres_changes: [{ event: "*", schema: "public", table: "sync_version" }] },
+      ...(CFG.anonKey.startsWith("eyJ") ? { access_token: CFG.anonKey } : {}),
+    });
+    hb = setInterval(() => send("phoenix", "heartbeat", {}), 25000);
+  };
+  ws.onmessage = (m) => {
+    let msg; try { msg = JSON.parse(m.data); } catch { return; }
+    if (msg.topic !== "realtime:akari-sync") return;
+    if (msg.event === "phx_reply" && msg.payload?.status === "ok") rtLive = true;
+    if (msg.event === "postgres_changes" && msg.payload?.data?.record?.version !== S.data?.version) loadState().catch(() => {});
+  };
+  ws.onclose = () => {
+    clearInterval(hb); rtLive = false; rtSocket = null;
+    if (S.token) setTimeout(realtimeConnect, 3000);
+  };
+  rtSocket = ws;
+}
+
+async function supaSyncLoop() {
+  if (syncing) return;
+  syncing = true;
+  realtimeConnect();
+  while (S.token) {
+    try {
+      const { version } = await api("GET", "/api/version");
+      setOnline(true);
+      if (version !== S.data?.version) await loadState();
+    } catch { /* offline: setOnline(false) already ran */ }
+    await new Promise((r) => setTimeout(r, rtLive ? 30000 : 5000));
+  }
+  syncing = false;
+}
+document.addEventListener("visibilitychange", () => {
+  if (SUPA && S.token && document.visibilityState === "visible") {
+    api("GET", "/api/version").then(({ version }) => { setOnline(true); if (version !== S.data?.version) return loadState(); }).catch(() => {});
+  }
+});
+
 function setOnline(on) {
   if (S.online === on) return;
   S.online = on;
@@ -111,6 +176,7 @@ function setOnline(on) {
 function logout(expired) {
   if (S.token) api("POST", "/api/logout").catch(() => {});
   S.token = null; S.data = null;
+  if (rtSocket) rtSocket.close();
   localStorage.removeItem("suite_token"); localStorage.removeItem("suite_state");
   closeSheet();
   renderAuth(expired ? "Your session expired, please log in again." : "");
