@@ -357,7 +357,8 @@ function viewMore(sub) {
     ${link("#/more/activity", "Activity log", "Who booked, edited or received payment")}
     <div class="item" data-act="exportCsv"><div class="main"><div class="title">Export bookings (CSV)</div><div class="sub">Open in Excel / Google Sheets</div></div><div class="side">⤓</div></div>
     ${admin ? `<div class="item" data-act="settings"><div class="main"><div class="title">Business settings</div><div class="sub">Name, currency, check-in/out time</div></div><div class="side">›</div></div>` : ""}
-    <div class="item" data-act="install"><div class="main"><div class="title">Install on this phone</div><div class="sub">Add to home screen</div></div><div class="side">›</div></div>
+    ${window.AndroidApp ? `<div class="item" data-act="server"><div class="main"><div class="title">Server address</div><div class="sub">${esc(AndroidApp.serverUrl())}</div></div><div class="side">›</div></div>` : ""}
+    <div class="item ${window.AndroidApp ? "hidden" : ""}" data-act="install"><div class="main"><div class="title">Install on this phone</div><div class="sub">Add to home screen</div></div><div class="side">›</div></div>
     <div class="item" data-act="password"><div class="main"><div class="title">Change my password</div></div><div class="side">›</div></div>
     <div class="item" data-act="logout"><div class="main"><div class="title" style="color:var(--red)">Log out</div></div></div>`;
 }
@@ -455,6 +456,7 @@ const ACTIONS = {
   settings: () => openSettings(),
   password: () => openPassword(),
   install: () => openInstall(),
+  server: () => window.AndroidApp && AndroidApp.changeServer(),
   exportCsv: () => exportCsv(),
   logout: () => { if (confirm("Log out of this phone?")) logout(); },
 };
@@ -605,7 +607,8 @@ function shareBooking(b) {
     `Nights: ${diffDays(b.check_in, b.check_out)}  Guests: ${b.guests}\n` +
     `Total: ${money(b.total)}  Paid: ${money(p.paid)}  Balance: ${money(p.balance)}\n` +
     `Thank you!`;
-  if (navigator.share) navigator.share({ text }).catch(() => {});
+  if (window.AndroidApp) AndroidApp.share(text);
+  else if (navigator.share) navigator.share({ text }).catch(() => {});
   else navigator.clipboard?.writeText(text).then(() => toast("Copied – paste it in Messenger/SMS"), () => prompt("Copy this:", text));
 }
 
@@ -774,6 +777,7 @@ function exportCsv() {
     const row = { ...b, room: roomName(b.room_id), nights: diffDays(b.check_in, b.check_out), paid: p.paid, balance: p.balance };
     lines.push(cols.map((c) => `"${String(row[c] ?? "").replace(/"/g, '""')}"`).join(","));
   }
+  if (window.AndroidApp) { AndroidApp.saveFile(`bookings-${todayISO()}.csv`, "text/csv", "\ufeff" + lines.join("\n")); return; }
   const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -783,6 +787,13 @@ function exportCsv() {
 }
 
 /* ---------- boot ---------- */
+window.__androidBack = () => {
+  if ($(".sheet-bg")) { closeSheet(); return true; }
+  const [page, sub] = route();
+  if (sub) { location.hash = "#/" + page; return true; }
+  if (page !== "today" && S.token) { location.hash = "#/today"; return true; }
+  return false;
+};
 window.addEventListener("hashchange", () => { closeSheet(); window.scrollTo(0, 0); render(); });
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S.token) loadState().catch(() => {}); });
 window.addEventListener("online", () => S.token && loadState().catch(() => {}));
