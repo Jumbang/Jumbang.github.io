@@ -1,5 +1,5 @@
 "use strict";
-/* Suite Bookings – single-file vanilla JS PWA client */
+/* Akari Suite Booking System – single-file vanilla JS PWA client */
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -148,7 +148,7 @@ async function renderAuth(message = "") {
   } else {
     app.innerHTML = `<div class="auth">
       <img class="logo" src="/icons/icon-192.png" alt="">
-      <h1>Suite Bookings</h1><p class="lead">Staff login</p>
+      <h1>Akari Suite Booking System</h1><p class="lead">Staff login</p>
       <form id="login" class="card">
         <label class="f">Username<input name="username" autocapitalize="none" autocomplete="username" required></label>
         <label class="f">Password<input name="password" type="password" autocomplete="current-password" required></label>
@@ -351,6 +351,9 @@ function viewMore(sub) {
   const link = (href, label, hint) => `<a class="item" href="${href}" style="text-decoration:none;color:inherit"><div class="main"><div class="title">${label}</div><div class="sub">${hint}</div></div><div class="side">›</div></a>`;
   return `
     <div class="card"><div style="font-weight:800">${esc(S.data.me.name)}</div><div class="sub" style="color:var(--muted);font-size:13px">@${esc(S.data.me.username)} · ${S.data.me.role === "admin" ? "Owner / admin" : "Staff"}</div></div>
+    <div class="section-title">Appearance</div>
+    <div class="card"><div class="seg">${[["light", "☀️ Light"], ["dark", "🌙 Dark"], ["system", "Auto"]].map(([t, l]) => `<button class="${themePref() === t ? "on" : ""}" data-act="theme" data-t="${t}">${l}</button>`).join("")}</div>
+      <div style="color:var(--muted);font-size:12px;margin-top:8px">Auto follows your phone's light/dark setting.</div></div>
     ${link("#/more/reports", "Reports", "Income, occupancy, booking sources")}
     ${link("#/more/rooms", "Rooms / suites", admin ? "Add rooms, set default prices" : "View rooms")}
     ${admin ? link("#/more/staff", "Staff accounts", "Give your staff their own login") : ""}
@@ -456,6 +459,7 @@ const ACTIONS = {
   settings: () => openSettings(),
   password: () => openPassword(),
   install: () => openInstall(),
+  theme: (el) => { localStorage.setItem(THEME_KEY, el.dataset.t); applyTheme(); render(); },
   server: () => window.AndroidApp && AndroidApp.changeServer(),
   exportCsv: () => exportCsv(),
   logout: () => { if (confirm("Log out of this phone?")) logout(); },
@@ -785,6 +789,21 @@ function exportCsv() {
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+
+/* ---------- theme ---------- */
+const THEME_KEY = "akari_theme";
+const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+function themePref() { return localStorage.getItem(THEME_KEY) || "system"; }
+function applyTheme() {
+  const p = themePref();
+  const dark = p === "dark" || (p === "system" && darkQuery.matches);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  const bar = getComputedStyle(document.documentElement).getPropertyValue("--topbar").trim();
+  $('meta[name="theme-color"]')?.setAttribute("content", bar);
+  if (window.AndroidApp?.setStatusBar) AndroidApp.setStatusBar(bar);
+}
+darkQuery.addEventListener?.("change", applyTheme);
+applyTheme();
 
 /* ---------- boot ---------- */
 window.__androidBack = () => {

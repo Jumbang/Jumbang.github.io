@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS activity (
   detail TEXT DEFAULT '');
 """
 
-DEFAULT_SETTINGS = {"business_name": "My Suites", "currency": "₱", "check_in_time": "14:00", "check_out_time": "12:00"}
+DEFAULT_SETTINGS = {"business_name": "Akari Suites", "currency": "₱", "check_in_time": "14:00", "check_out_time": "12:00"}
 
 
 class ApiError(Exception):

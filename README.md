@@ -1,4 +1,4 @@
-# Suite Bookings
+# Akari Suite Booking System
 
 A phone-installable booking app (PWA) for a small suite/room rental business. All staff share one live database: a booking, payment or check-in made on one phone appears on every other phone within a second.
 

@@ -113,7 +113,7 @@ public class MainActivity extends Activity {
         int pad = dp(28);
         box.setPadding(pad, pad, pad, pad);
         TextView title = new TextView(this);
-        title.setText("Suite Bookings");
+        title.setText("Akari Suite Booking System");
         title.setTextSize(24);
         title.setTextColor(Color.parseColor("#111827"));
         title.setGravity(Gravity.CENTER);
@@ -192,6 +192,13 @@ public class MainActivity extends Activity {
     }
 
     class Bridge {
+        @JavascriptInterface
+        public void setStatusBar(final String color) {
+            runOnUiThread(() -> {
+                try { getWindow().setStatusBarColor(Color.parseColor(color)); } catch (Exception ignored) {}
+            });
+        }
+
         @JavascriptInterface
         public void share(String text) {
             Intent send = new Intent(Intent.ACTION_SEND);

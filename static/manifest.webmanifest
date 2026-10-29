@@ -1,6 +1,6 @@
 {
-  "name": "Suite Bookings",
-  "short_name": "Suites",
+  "name": "Akari Suite Booking System",
+  "short_name": "Akari Suites",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

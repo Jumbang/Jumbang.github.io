@@ -1,4 +1,4 @@
-const CACHE = "suites-v1";
+const CACHE = "akari-v2";
 const SHELL = ["/", "/index.html", "/style.css", "/app.js", "/manifest.webmanifest", "/icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {
